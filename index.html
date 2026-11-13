@@ -151,7 +151,12 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
         <b>Đường cao độ và độ lớn theo thời gian</b>
         <div class="hint" style="margin:2px 0 8px">Đường xanh dương = cao độ (nửa cung quanh mức giọng của bạn). Vùng xám = độ lớn. Ô dưới = từng âm tiết.</div>
         <canvas id="chart"></canvas>
-        <input id="chartRange" type="range" min="0" max="100" value="0" hidden style="width:100%;margin-top:8px">
+        <div class="row" style="margin-top:8px">
+          <button id="zOut">− Thu nhỏ</button><button id="zIn">+ Phóng to</button><button id="zFit">Xem cả đoạn</button>
+          <input id="chartRange" type="range" min="0" max="1000" value="0" style="flex:1;min-width:120px">
+          <span class="hint" id="chartInfo"></span>
+        </div>
+        <div class="hint" style="margin-top:4px">Lăn chuột để phóng to/thu nhỏ, kéo để di chuyển, bấm vào một từ để nghe lại từ đó.</div>
       </div>
       <div class="card">
         <b>Cần sửa trước</b>
@@ -595,7 +600,7 @@ function showResult(it){
   ];
   $("#tiles").innerHTML=tiles.map(t=>`<div class="tile"><b>${t[1]}</b><span>${t[0]}</span></div>`).join("");
   $("#srcTag").hidden=!it.demo; $("#srcTag").textContent="DEMO · giọng tổng hợp, không phải giọng của bạn";
-  $("#chartRange").value=0;
+  chartReset(it);
   $("#transBox").hidden=!it.free; if(it.free) $("#transText").textContent=it.transcript;
   selWord=-1; renderWords(it); $("#wordDetail").textContent="Bấm vào một từ để xem từng âm vị và nghe lại đúng từ đó.";
   renderIssues(it); requestAnimationFrame(()=>drawChart(it));
@@ -644,16 +649,27 @@ function renderIssues(it){
 }
 
 /* ============ biểu đồ ============ */
+const CH={t0:0,span:15};
+function chartReset(it){ const T=it.fa.n/100; CH.span=Math.min(T,15); CH.t0=0; }
+function chartClamp(T){ CH.span=Math.max(Math.min(1.5,T),Math.min(T,CH.span)); CH.t0=Math.max(0,Math.min(CH.t0,T-CH.span)); }
+function chartZoom(it,factor,cx){ const T=it.fa.n/100, a=CH.t0+CH.span*cx; CH.span=Math.max(1.5,Math.min(T,CH.span*factor)); CH.t0=a-CH.span*cx; chartClamp(T); drawChart(it); }
 function drawChart(it){
   const cv=$("#chart"), dpr=window.devicePixelRatio||1;
-  cv.style.width="100%";
+  cv.style.width="100%"; cv.style.height="270px";
   const W=cv.clientWidth, H=cv.clientHeight;
   cv.width=W*dpr; cv.height=H*dpr; const g=cv.getContext("2d"); g.scale(dpr,dpr);
   const cs=getComputedStyle(document.body), ink=cs.getPropertyValue("--ink"), mute=cs.getPropertyValue("--mute"), line=cs.getPropertyValue("--line"), acc=cs.getPropertyValue("--accent");
   g.clearRect(0,0,W,H);
-  const fa=it.fa, T=fa.n/100, win=T>40, span=win?30:T, rg=$("#chartRange"); rg.hidden=!win;
-  const t0=win?(+rg.value/100)*(T-span):0, i0=Math.max(0,Math.floor(t0*100)), i1=Math.min(fa.n,Math.ceil((t0+span)*100));
-  const padL=6, padR=6, top=8, plotH=H-70, X=t=>padL+(W-padL-padR)*(t-t0)/span;
+  const fa=it.fa, T=fa.n/100; chartClamp(T);
+  const span=CH.span, t0=CH.t0, i0=Math.max(0,Math.floor(t0*100)), i1=Math.min(fa.n,Math.ceil((t0+span)*100));
+  const rg=$("#chartRange"); rg.disabled=span>=T-0.01; rg.value=(T-span>0.01)?Math.round(1000*t0/(T-span)):0;
+  $("#chartInfo").textContent=`${t0.toFixed(1)}–${(t0+span).toFixed(1)}s / ${T.toFixed(0)}s`;
+  const padL=6, padR=6, top=8, plotH=H-118, X=t=>padL+(W-padL-padR)*(t-t0)/span;
+  // lưới thời gian
+  const steps=[0.25,0.5,1,2,5,10,30,60,120], px=(W-padL-padR)/span;
+  const step=steps.find(s=>s*px>=70)||120;
+  g.font="10px system-ui"; g.textAlign="left"; g.lineWidth=1;
+  for(let s=Math.ceil(t0/step)*step; s<=t0+span; s+=step){ const x=X(s); g.strokeStyle=line; g.beginPath(); g.moveTo(x,top); g.lineTo(x,top+plotH); g.stroke(); g.fillStyle=mute; g.fillText(s.toFixed(step<1?2:0)+"s",x+3,top+plotH-3); }
   // độ lớn
   g.fillStyle="rgba(128,128,128,.22)"; g.beginPath(); g.moveTo(X(t0),top+plotH);
   for(let i=i0;i<i1;i++){ const v=clamp((fa.db[i]-(fa.top-45))/45,0,1); g.lineTo(X(i/100),top+plotH-v*plotH*0.55); }
@@ -663,23 +679,41 @@ function drawChart(it){
   for(let i=i0;i<i1;i++){ const v=fa.st[i]; if(Number.isNaN(v)){ pen=false; continue; }
     const y=top+plotH*(0.5-clamp(v,-9,9)/20); if(!pen){ g.moveTo(X(i/100),y); pen=true; } else g.lineTo(X(i/100),y); }
   g.stroke();
-  // âm tiết
-  const y0=top+plotH+8;
+  g.strokeStyle=line; g.lineWidth=1; g.beginPath(); g.moveTo(0,top+plotH*0.5); g.lineTo(W,top+plotH*0.5); g.stroke();
+  // từ và âm tiết
+  const y0=top+plotH+8, rowEnd=[-1e9,-1e9];
   it.words.forEach(w=>{
     if(w.t0===null||w.t1<t0||w.t0>t0+span) return;
-    g.fillStyle=mute; g.font="11px system-ui"; g.textAlign="left"; g.fillText(w.text,X(w.t0),y0+10);
-    (w.syl.length?w.syl:[{t0:w.t0,t1:w.t1,acc:w.acc}]).forEach((s,k)=>{
+    g.font="12px system-ui"; g.textAlign="left"; g.fillStyle=mute;
+    const x0=X(w.t0), tw=g.measureText(w.text).width; let row=-1;
+    if(x0>=rowEnd[0]+5) row=0; else if(x0>=rowEnd[1]+5) row=1;
+    if(row>=0){ g.fillText(w.text,x0,y0+10+row*14); rowEnd[row]=x0+tw; }
+    (w.syl.length?w.syl:[{t0:w.t0,t1:w.t1,acc:w.acc,ipa:""}]).forEach((s,k)=>{
       const c=s.acc>=80?"#1b9e6a":s.acc>=60?"#d98e00":"#d23f3f";
-      g.fillStyle=c; g.globalAlpha=.85; const x=X(s.t0)+1, wd=Math.max(2,X(s.t1)-X(s.t0)-2);
-      g.fillRect(x,y0+16,wd,16); g.globalAlpha=1;
-      if(w.prom&&w.detected===k){ g.fillStyle=ink; g.beginPath(); g.arc(x+wd/2,y0+42,3.5,0,7); g.fill(); }
-      if(w.expected===k){ g.fillStyle=ink; g.font="10px system-ui"; g.textAlign="center"; g.fillText("▲",x+wd/2,y0+54); }
+      const x=X(s.t0)+1, wd=Math.max(2,X(s.t1)-X(s.t0)-2);
+      g.fillStyle=c; g.globalAlpha=.9; g.fillRect(x,y0+34,wd,22); g.globalAlpha=1;
+      g.font="10px system-ui"; g.textAlign="center";
+      if(s.ipa&&g.measureText(s.ipa).width+4<=wd){ g.fillStyle="#fff"; g.fillText(s.ipa,x+wd/2,y0+49); }
+      if(w.prom&&w.detected===k){ g.fillStyle=ink; g.beginPath(); g.arc(x+wd/2,y0+68,3.5,0,7); g.fill(); }
+      if(w.expected===k){ g.fillStyle=ink; g.fillText("▲",x+wd/2,y0+84); }
     });
   });
-  g.strokeStyle=line; g.lineWidth=1; g.beginPath(); g.moveTo(0,top+plotH*0.5); g.lineTo(W,top+plotH*0.5); g.stroke();
 }
+(function(){
+  const cv=$("#chart"); cv.style.touchAction="none"; cv.style.cursor="grab";
+  let drag=null;
+  const item=()=>curItem();
+  cv.addEventListener("wheel",e=>{ const it=item(); if(!it) return; e.preventDefault(); const r=cv.getBoundingClientRect(); chartZoom(it,e.deltaY>0?1.25:0.8,(e.clientX-r.left)/r.width); },{passive:false});
+  cv.addEventListener("pointerdown",e=>{ drag={x:e.clientX,t0:CH.t0,moved:0}; cv.setPointerCapture(e.pointerId); cv.style.cursor="grabbing"; });
+  cv.addEventListener("pointermove",e=>{ const it=item(); if(!drag||!it) return; const r=cv.getBoundingClientRect(), dx=e.clientX-drag.x; drag.moved=Math.max(drag.moved,Math.abs(dx)); CH.t0=drag.t0-dx/r.width*CH.span; drawChart(it); });
+  cv.addEventListener("pointerup",e=>{ const it=item(); cv.style.cursor="grab"; if(drag&&it&&drag.moved<4){ const r=cv.getBoundingClientRect(), t=CH.t0+(e.clientX-r.left)/r.width*CH.span; const w=it.words.find(w=>w.t0!==null&&t>=w.t0-0.03&&t<=w.t1+0.03); if(w) playSlice(it.pcm,Math.max(0,w.t0-0.05),w.t1+0.08); } drag=null; });
+  cv.addEventListener("dblclick",e=>{ const it=item(); if(!it) return; const r=cv.getBoundingClientRect(); chartZoom(it,0.5,(e.clientX-r.left)/r.width); });
+  $("#zIn").onclick=()=>{ const it=item(); if(it) chartZoom(it,0.5,0.5); };
+  $("#zOut").onclick=()=>{ const it=item(); if(it) chartZoom(it,2,0.5); };
+  $("#zFit").onclick=()=>{ const it=item(); if(!it) return; CH.span=it.fa.n/100; CH.t0=0; drawChart(it); };
+})();
 const curItem=()=>S.mode==="free"?S.lastFree:S.results[S.idx];
-$("#chartRange").oninput=()=>{ const r=curItem(); if(r) drawChart(r); };
+$("#chartRange").oninput=()=>{ const r=curItem(); if(!r) return; const T=r.fa.n/100; CH.t0=(+$("#chartRange").value/1000)*Math.max(0,T-CH.span); drawChart(r); };
 window.addEventListener("resize",()=>{ const r=curItem(); if(r&&!$("#result").hidden) drawChart(r); });
 
 /* ============ phát lại ============ */
@@ -842,7 +876,7 @@ document.querySelectorAll("#modeTabs button").forEach(b=>b.onclick=()=>switchMod
 FREE_TOPICS.forEach((tp,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=tp.t; $("#topicSel").appendChild(o); });
 $("#topicSel").onchange=()=>pickTopic($("#topicSel").selectedIndex);
 $("#btnCopyTrans").onclick=async()=>{ const r=S.lastFree; if(!r) return; try{ await navigator.clipboard.writeText(r.transcript); $("#btnCopyTrans").textContent="Đã copy ✓"; }catch(e){ $("#btnCopyTrans").textContent="Không copy được"; } setTimeout(()=>$("#btnCopyTrans").textContent="Copy bản ghi (dán vào chat để chấm ngữ pháp, từ vựng)",1800); };
-window.__test={splitPoints,shiftTicks,switchMode,mergePhrases,buildItem,demoResult,frameAnalyze,syllableProminence,S,analyze:(r,i)=>analyze(new Float32Array(16000),r,i),aggregate,sheetRow,loadDict,stressOf};
+window.__test={showResult,drawChart,demoResultFn:demoResult,splitPoints,shiftTicks,switchMode,mergePhrases,buildItem,demoResult,frameAnalyze,syllableProminence,S,analyze:(r,i)=>analyze(new Float32Array(16000),r,i),aggregate,sheetRow,loadDict,stressOf};
 
 (async()=>{ await loadDict(); initLessons(); setMode(); })();
 </script>
