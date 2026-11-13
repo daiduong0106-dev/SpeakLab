@@ -77,6 +77,14 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 .hist div{display:flex;gap:10px;justify-content:space-between;border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:14px}
 .spark{height:70px}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:10px;z-index:99;font-size:14px;max-width:90vw}
+.pl{margin-bottom:12px}.pl:last-child{margin-bottom:0}
+.pl canvas{height:96px;cursor:pointer;touch-action:pan-y}
+#recBar{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;width:min(560px,92vw);z-index:50;display:flex;align-items:center;gap:12px;background:var(--card);border:2px solid var(--bad);border-radius:14px;padding:10px 14px;box-shadow:0 8px 30px rgba(0,0,0,.35)}
+#recBar[hidden]{display:none}
+.rdot{width:12px;height:12px;border-radius:50%;background:var(--bad);animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.25}}
+#btnStop{background:var(--bad);border-color:var(--bad);color:#fff;font-weight:700;padding:10px 16px}
+#recTime{font-variant-numeric:tabular-nums;font-size:18px;min-width:48px}
 </style>
 </head>
 <body>
@@ -137,6 +145,11 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
       </div>
     </div>
 
+    <div class="card" id="playersCard" hidden>
+      <div id="plModel" hidden></div>
+      <div id="plUser" hidden></div>
+    </div>
+
     <div id="result" hidden>
       <div class="card">
         <div id="srcTag" class="tag" hidden style="margin:0 0 8px"></div>
@@ -189,6 +202,12 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
       <div class="hist" id="histList" style="margin-top:10px"></div>
     </div>
   </section>
+</div>
+
+<div id="recBar" hidden>
+  <span class="rdot"></span><b id="recTime">0:00</b>
+  <div class="meter" style="flex:1"><i id="meter2"></i></div>
+  <button id="btnStop">■ Dừng ghi</button>
 </div>
 
 <dialog id="dlg">
@@ -312,14 +331,14 @@ const esc=s=>s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&qu
 function selectSent(i){
   S.idx=i; renderSents();
   $("#sentLabel").textContent=`Câu ${i+1}/${S.sents.length}`;
-  $("#target").textContent=S.sents[i]; $("#btnModel").hidden=false; S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true;
+  $("#target").textContent=S.sents[i]; $("#btnModel").hidden=false; S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true; hideModel();
   const r=S.results[i];
   $("#btnMine").disabled=!r;
-  if(r) showResult(r); else $("#result").hidden=true;
+  if(r) showResult(r); else{ $("#result").hidden=true; hideUserPlayer(); }
 }
 
 /* ============ ghi âm ============ */
-let rec=null;
+let rec=null, recStart=0, recTimer=null;
 async function toggleRec(){
   if(rec){ return stopRec(); }
   try{
@@ -331,7 +350,7 @@ async function toggleRec(){
     proc.onaudioprocess=e=>{
       const d=e.inputBuffer.getChannelData(0); chunks.push(new Float32Array(d)); n+=d.length;
       let s=0; for(let i=0;i<d.length;i++) s+=d[i]*d[i];
-      $("#meter").style.width=clamp(Math.sqrt(s/d.length)*400,0,100)+"%";
+      const lv=clamp(Math.sqrt(s/d.length)*400,0,100)+"%"; $("#meter").style.width=lv; $("#meter2").style.width=lv;
       if(n/ctx.sampleRate>((S.mode==="free"||S.scope==="all")?900:40)) stopRec();
     };
     const mute=ctx.createGain(); mute.gain.value=0;
@@ -339,20 +358,24 @@ async function toggleRec(){
     rec={stream,ctx,proc,src,chunks,rate:ctx.sampleRate};
     S.pending=null; $("#btnScore").hidden=true;
     $("#btnRec").classList.add("live"); $("#btnRec").textContent="DỪNG";
-    $("#recStatus").textContent="Đang ghi… đọc cả câu rồi bấm DỪNG.";
+    $("#recStatus").textContent="Đang ghi… bấm ■ Dừng ghi (thanh đỏ phía dưới màn hình) khi nói xong.";
+    Players.forEach(p=>p.pause());
+    recStart=Date.now(); $("#recTime").textContent="0:00"; $("#recBar").hidden=false;
+    recTimer=setInterval(()=>{ $("#recTime").textContent=fmt((Date.now()-recStart)/1000); },250);
   }catch(e){
     $("#recStatus").innerHTML=`<span class="err">Không mở được micro: ${esc(String(e.message||e))}</span>`;
   }
 }
 async function stopRec(){
   const r=rec; rec=null; if(!r) return;
+  clearInterval(recTimer); $("#recBar").hidden=true; $("#meter2").style.width="0";
   r.proc.disconnect(); r.src.disconnect(); r.stream.getTracks().forEach(t=>t.stop()); r.ctx.close();
   $("#btnRec").classList.remove("live"); $("#btnRec").textContent="GHI ÂM"; $("#meter").style.width="0";
   const total=r.chunks.reduce((s,c)=>s+c.length,0), raw=new Float32Array(total);
   let o=0; for(const c of r.chunks){ raw.set(c,o); o+=c.length; }
   const pcm=downsample(raw,r.rate,16000);
   if(pcm.length<16000*0.5){ $("#recStatus").textContent="Bản ghi quá ngắn, thử lại."; return; }
-  S.lastRaw=pcm; S.pending=pcm; $("#btnMine").disabled=false; $("#btnScore").hidden=false;
+  S.lastRaw=pcm; S.pending=pcm; $("#btnMine").disabled=false; $("#btnScore").hidden=false; loadUserRaw(pcm);
   const secs=pcm.length/16000, mm=Math.floor(secs/60), ss=Math.round(secs%60);
   $("#recStatus").textContent=`Đã ghi ${mm?mm+" phút ":""}${ss} giây. Bấm "Nghe lại mình" để kiểm tra, rồi bấm "Chấm điểm". Muốn ghi lại thì bấm GHI ÂM.`;
 }
@@ -640,7 +663,7 @@ function showResult(it){
   chartReset(it);
   $("#transBox").hidden=!it.free; if(it.free) $("#transText").textContent=it.transcript;
   selWord=-1; renderWords(it); $("#wordDetail").textContent="Bấm vào một từ để xem từng âm vị và nghe lại đúng từ đó.";
-  renderIssues(it); requestAnimationFrame(()=>drawChart(it));
+  renderIssues(it); requestAnimationFrame(()=>drawChart(it)); loadUserFromItem(it);
 }
 function renderWords(it){
   const box=$("#words"); box.innerHTML="";
@@ -669,9 +692,10 @@ function wordDetail(it,w){
   if(w.err==="Insertion") h+=" · từ thừa";
   if(w.ph.length) h+=`<div class="sylrow" style="margin-top:6px">`+w.ph.map(p=>`<div class="syl ${cls(p.acc)}"><span class="ipa">${esc(p.ipa)}</span><span class="ac">${Math.round(p.acc)}</span></div>`).join("")+`</div>`;
   if(w.fb&&w.fb.Prosody){ const e=[]; const b=w.fb.Prosody.Break, i=w.fb.Prosody.Intonation; if(b&&b.ErrorTypes&&b.ErrorTypes.some(x=>x!=="None")) e.push("ngắt: "+b.ErrorTypes.filter(x=>x!=="None").join(", ")); if(i&&i.ErrorTypes&&i.ErrorTypes.some(x=>x!=="None")) e.push("ngữ điệu: "+i.ErrorTypes.filter(x=>x!=="None").join(", ")); if(e.length) h+=`<div style="margin-top:6px">${e.join(" · ")}</div>`; }
-  if(w.t0!==null) h+=`<div style="margin-top:8px"><button id="playW">▶ Nghe từ này</button></div>`;
+  if(w.t0!==null) h+=`<div style="margin-top:8px" class="row"><button id="playW">▶ Nghe từ này</button><button id="playFrom">▶ Phát từ đây trong timeline</button></div>`;
   $("#wordDetail").innerHTML=h;
   const b=$("#playW"); if(b) b.onclick=()=>playSlice(it.pcm,Math.max(0,w.t0-0.05),w.t1+0.08);
+  const pf=$("#playFrom"); if(pf) pf.onclick=()=>{ loadUserFromItem(it); userPlayer.seek(Math.max(0,w.t0-0.1),false); userPlayer.play(); };
 }
 function renderIssues(it){
   const L=[];
@@ -890,8 +914,9 @@ document.querySelectorAll("#mainTabs button").forEach(b=>b.onclick=()=>{
   if(b.dataset.tab==="practice"){ const r=curItem(); if(r) requestAnimationFrame(()=>drawChart(r)); }
 });
 $("#btnRec").onclick=toggleRec;
-$("#btnModel").onclick=speakModel;
-$("#btnMine").onclick=()=>{ const r=curItem(); const pcm=S.lastRaw||(r&&r.pcm); if(pcm) playSlice(pcm,0,pcm.length/16000); };
+$("#btnModel").onclick=showModel;
+$("#btnMine").onclick=()=>{ const r=curItem(); const pcm=S.lastRaw||(r&&r.pcm); if(!pcm) return; if(userPlayer.pcm!==pcm){ if(r&&r.pcm===pcm) loadUserFromItem(r); else loadUserRaw(pcm); } userPlayer.play(); };
+$("#btnStop").onclick=()=>stopRec();
 $("#btnScore").onclick=async()=>{ if(!S.pending) return; const b=$("#btnScore"); b.disabled=true; try{ await analyze(S.pending,S.mode==="free"?"":(S.scope==="all"?S.sents.join(" "):S.sents[S.idx]),S.idx); }finally{ b.disabled=false; } };
 $("#btnDemo").onclick=()=>analyze(new Float32Array(16000),S.mode==="free"?"":(S.scope==="all"?S.sents.join(" "):S.sents[S.idx]),S.idx,true);
 $("#btnCustom").onclick=()=>{ $("#customBox").hidden=!$("#customBox").hidden; };
@@ -905,10 +930,132 @@ $("#btnSaveKey").onclick=()=>{ S.cfg={key:$("#inKey").value.trim(),region:$("#in
 $("#btnCopy").onclick=async()=>{ const a=aggregate(); if(!a) return; try{ await navigator.clipboard.writeText(sheetRow(a)); $("#btnCopy").textContent="Đã copy ✓"; }catch(e){ $("#btnCopy").textContent="Không copy được"; } setTimeout(()=>$("#btnCopy").textContent="Copy dòng (cột A→X)",1800); };
 $("#btnSave").onclick=()=>{ const a=aggregate(); if(!a) return; const h=store.get("sl_hist",[]); h.push(a); store.set("sl_hist",h); $("#btnSave").textContent="Đã lưu ✓"; setTimeout(()=>$("#btnSave").textContent="Lưu vào lịch sử",1800); };
 
+/* ===== trình phát có timeline ===== */
+const Players=[];
+const fmt=s=>{ s=Math.max(0,s||0); return Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0"); };
+function updatePlayersCard(){ $("#playersCard").hidden=$("#plModel").hidden&&$("#plUser").hidden; }
+class Player{
+  constructor(root,title){
+    this.root=root; this.pcm=null; this.buf=null; this.marks=[]; this.regions=[]; this.dur=0; this.pos=0; this.playing=false; this.speed=1; this.gain=1; this.bg=null; this.bgW=0; this.src=null; this.drag=false;
+    root.innerHTML=`<div class="pl"><div class="row" style="margin-bottom:6px"><b>${esc(title)}</b></div>
+      <div class="row" style="margin-bottom:6px"><button class="pb">⏪ 5s</button><button class="pp primary" style="min-width:64px">▶</button><button class="pf">5s ⏩</button><span class="pt hint">0:00 / 0:00</span>
+      <select class="sp" style="margin-left:auto"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option></select></div>
+      <canvas class="pc"></canvas></div>`;
+    this.cv=root.querySelector(".pc"); this.btn=root.querySelector(".pp");
+    this.btn.onclick=()=>this.playing?this.pause():this.play();
+    root.querySelector(".pb").onclick=()=>this.seek(this.syncPos()-5,this.playing);
+    root.querySelector(".pf").onclick=()=>this.seek(this.syncPos()+5,this.playing);
+    root.querySelector(".sp").onchange=e=>{ this.syncPos(); this.speed=+e.target.value; if(this.playing) this._start(); };
+    const at=e=>{ const r=this.cv.getBoundingClientRect(); return clamp((e.clientX-r.left)/r.width,0,1)*this.dur; };
+    this.cv.addEventListener("pointerdown",e=>{ if(!this.buf) return; this.drag=true; this.cv.setPointerCapture(e.pointerId); this._stop(); this.playing=false; this.pos=at(e); this.updateBtn(); this.render(); });
+    this.cv.addEventListener("pointermove",e=>{ if(!this.drag) return; this.pos=at(e); this.render(); });
+    this.cv.addEventListener("pointerup",e=>{ if(!this.drag) return; this.drag=false; this.pos=at(e); this.play(); });
+    Players.push(this);
+  }
+  load(pcm,marks=[],regions=[]){
+    this.pause(); this.pcm=pcm; this.marks=marks; this.regions=regions; this.dur=pcm.length/16000; this.pos=0;
+    let pk=0; for(let i=0;i<pcm.length;i+=7){ const v=Math.abs(pcm[i]); if(v>pk) pk=v; }
+    this.gain=pk>0?Math.min(20,0.85/pk):1;
+    const c=actx(); this.buf=c.createBuffer(1,pcm.length,16000); this.buf.copyToChannel(pcm,0);
+    this.bgW=0; this.root.hidden=false; updatePlayersCard(); this.render();
+  }
+  setMarks(marks,regions){ this.marks=marks; this.regions=regions; this.bgW=0; this.render(); }
+  hide(){ this.pause(); this.root.hidden=true; updatePlayersCard(); }
+  updateBtn(){ this.btn.textContent=this.playing?"❚❚":"▶"; }
+  syncPos(){ if(this.playing&&this.src){ const c=actx(); this.pos=Math.min(this.dur,this.posStart+(c.currentTime-this.ctxStart)*this.speed); } return this.pos; }
+  _stop(){ cancelAnimationFrame(this.raf); const s=this.src; this.src=null; if(s){ try{ s.stop(); }catch(e){} } }
+  _start(){
+    const c=actx(); this._stop();
+    const s=c.createBufferSource(); s.buffer=this.buf; s.playbackRate.value=this.speed;
+    const gn=c.createGain(); gn.gain.value=this.gain; s.connect(gn); gn.connect(c.destination);
+    this.src=s; this.ctxStart=c.currentTime; this.posStart=this.pos; this.playing=true; this.updateBtn();
+    s.onended=()=>{ if(this.src===s){ this.src=null; this.playing=false; this.pos=0; this.updateBtn(); this.render(); } };
+    s.start(0,this.pos); this.loop();
+  }
+  loop(){ const f=()=>{ if(!this.playing) return; this.syncPos(); this.render(); this.raf=requestAnimationFrame(f); }; f(); }
+  async play(){
+    if(!this.buf) return; Players.forEach(p=>{ if(p!==this) p.pause(); });
+    const c=actx(); if(c.state!=="running") await c.resume();
+    if(this.pos>=this.dur-0.05) this.pos=0; this._start();
+  }
+  pause(){ if(this.playing){ this.syncPos(); } this._stop(); this.playing=false; this.updateBtn(); this.render(); }
+  seek(t,keepPlaying){ this.pos=clamp(t,0,this.dur); if(keepPlaying&&this.playing) this._start(); else this.render(); }
+  buildBg(W,H,dpr){
+    const o=document.createElement("canvas"); o.width=Math.round(W*dpr); o.height=Math.round(H*dpr); const g=o.getContext("2d"); g.scale(dpr,dpr);
+    const cs=getComputedStyle(document.body), ink=cs.getPropertyValue("--ink"), mute=cs.getPropertyValue("--mute"), line=cs.getPropertyValue("--line"), acc=cs.getPropertyValue("--accent");
+    this.accColor=acc;
+    const top=24, bot=H-16, mid=(top+bot)/2, amp=(bot-top)/2, X=t=>t/this.dur*W;
+    g.fillStyle="rgba(128,128,128,.08)"; g.fillRect(0,top,W,bot-top);
+    this.regions.forEach(r=>{ g.fillStyle="rgba(210,63,63,.22)"; g.fillRect(X(r.a),top,Math.max(2,X(r.b)-X(r.a)),bot-top); });
+    // sóng âm
+    const x=this.pcm, n=x.length, step=n/W; g.fillStyle=acc; g.globalAlpha=.7;
+    for(let c=0;c<W;c++){ const a=Math.floor(c*step), b=Math.min(n,Math.floor((c+1)*step)), st=Math.max(1,Math.floor((b-a)/120)); let mn=0,mx=0; for(let i=a;i<b;i+=st){ const v=x[i]; if(v<mn) mn=v; if(v>mx) mx=v; }
+      const nm=Math.min(1,Math.max(-mn,mx)*this.gain); const h=Math.max(1,nm*amp); g.fillRect(c,mid-h,1,2*h); }
+    g.globalAlpha=1;
+    // mốc từ
+    g.font="11px system-ui"; g.textAlign="left"; let lastEnd=-1e9;
+    this.marks.forEach(m=>{ const px=X(m.t); g.strokeStyle=line; g.lineWidth=1; g.beginPath(); g.moveTo(px,top); g.lineTo(px,bot); g.stroke();
+      const tw=g.measureText(m.text).width; if(px>=lastEnd+4){ g.fillStyle=ink; g.fillText(m.text,px+2,16); lastEnd=px+2+tw; } });
+    // thước thời gian
+    const steps=[1,2,5,10,15,30,60,120,300], pxs=W/this.dur, sp=steps.find(s=>s*pxs>=60)||300;
+    g.fillStyle=mute; g.textAlign="left"; g.font="10px system-ui";
+    for(let s=0;s<=this.dur;s+=sp){ g.fillText(fmt(s),Math.min(W-28,X(s)+2),H-4); g.strokeStyle=mute; g.beginPath(); g.moveTo(X(s),bot); g.lineTo(X(s),bot+4); g.stroke(); }
+    this.bg=o; this.bgW=W;
+  }
+  render(){
+    const cv=this.cv; if(!this.buf) return; const W=cv.clientWidth; if(!W) return; const H=96, dpr=window.devicePixelRatio||1;
+    if(cv.width!==Math.round(W*dpr)||cv.height!==H*dpr){ cv.width=Math.round(W*dpr); cv.height=H*dpr; cv.style.height=H+"px"; this.bgW=0; }
+    if(this.bgW!==W) this.buildBg(W,H,dpr);
+    const g=cv.getContext("2d"); g.setTransform(1,0,0,1,0,0); g.clearRect(0,0,cv.width,cv.height); g.drawImage(this.bg,0,0);
+    g.scale(dpr,dpr); const px=this.pos/this.dur*W; g.fillStyle=this.accColor; g.fillRect(px-1,0,2,H);
+    g.beginPath(); g.moveTo(px-5,0); g.lineTo(px+5,0); g.lineTo(px,7); g.closePath(); g.fill();
+    this.root.querySelector(".pt").textContent=`${fmt(this.pos)} / ${fmt(this.dur)}`;
+  }
+}
+const modelPlayer=new Player($("#plModel"),"Giọng mẫu"), userPlayer=new Player($("#plUser"),"Bản ghi của bạn");
+window.addEventListener("resize",()=>Players.forEach(p=>{ p.bgW=0; p.render(); }));
+const marksOf=it=>it.words.filter(w=>w.t0!==null).map(w=>({t:w.t0,text:w.text}));
+const regionsOf=it=>it.words.filter(w=>w.badPauseAfter).map(w=>({a:w.t1,b:w.t1+w.badPauseAfter}));
+function loadUserFromItem(it){ if(!it||!it.pcm) return; if(userPlayer.pcm===it.pcm) userPlayer.setMarks(marksOf(it),regionsOf(it)); else userPlayer.load(it.pcm,marksOf(it),regionsOf(it)); }
+function loadUserRaw(pcm){ userPlayer.load(pcm,[],[]); }
+function hideUserPlayer(){ userPlayer.hide(); }
+function hideModel(){ modelPlayer.hide(); }
+
+/* giọng mẫu bằng Azure TTS để có timeline */
+const MODEL_CACHE={};
+function wavToFloat(ab){
+  const v=new DataView(ab); let o=12;
+  while(o+8<=v.byteLength){
+    const id=String.fromCharCode(v.getUint8(o),v.getUint8(o+1),v.getUint8(o+2),v.getUint8(o+3)), size=v.getUint32(o+4,true);
+    if(id==="data"){ const n=Math.min(size,v.byteLength-o-8)>>1, f=new Float32Array(n); for(let i=0;i<n;i++) f[i]=v.getInt16(o+8+2*i,true)/32768; return f; }
+    o+=8+size+(size&1);
+  }
+  throw new Error("Không đọc được dữ liệu âm thanh mẫu");
+}
+async function modelAudio(text){
+  if(MODEL_CACHE[text]) return MODEL_CACHE[text];
+  const SDK=window.SpeechSDK, sc=SDK.SpeechConfig.fromSubscription(S.cfg.key,S.cfg.region);
+  sc.speechSynthesisVoiceName="en-US-JennyNeural";
+  sc.speechSynthesisOutputFormat=SDK.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm;
+  const syn=new SDK.SpeechSynthesizer(sc,null), marks=[];
+  syn.wordBoundary=(s,e)=>{ if(SDK.SpeechSynthesisBoundaryType&&e.boundaryType===SDK.SpeechSynthesisBoundaryType.Punctuation) return; marks.push({t:e.audioOffset/1e7,text:e.text}); };
+  const res=await new Promise((ok,no)=>syn.speakTextAsync(text,r=>{ syn.close(); ok(r); },e=>{ syn.close(); no(new Error(String(e))); }));
+  if(res.reason!==SDK.ResultReason.SynthesizingAudioCompleted) throw new Error(res.errorDetails||"Azure TTS báo lỗi");
+  const out={pcm:wavToFloat(res.audioData),marks}; MODEL_CACHE[text]=out; return out;
+}
+async function showModel(){
+  const text=S.scope==="all"?S.sents.join(" "):S.sents[S.idx];
+  if(!hasKey()){ speakModel(); toast("Nhập Azure key để có timeline cho giọng mẫu. Tạm đọc bằng giọng trình duyệt."); return; }
+  const b=$("#btnModel"); b.disabled=true;
+  try{ const a=await modelAudio(text); modelPlayer.load(a.pcm,a.marks,[]); modelPlayer.play(); }
+  catch(e){ toast("Không tạo được giọng mẫu ("+(e.message||e)+"). Tạm đọc bằng giọng trình duyệt."); speakModel(); }
+  finally{ b.disabled=false; }
+}
+
 /* ===== chuyển chế độ ===== */
 function switchScope(sc){
   S.scope=sc; document.querySelectorAll("#scopeTabs button").forEach(b=>b.classList.toggle("on",b.dataset.scope===sc));
-  $("#sentList").hidden=(sc==="all"); S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true; $("#result").hidden=true;
+  $("#sentList").hidden=(sc==="all"); S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true; $("#result").hidden=true; hideModel(); hideUserPlayer();
   if(sc==="all"){
     $("#sentLabel").textContent=`Cả đoạn · ${S.sents.length} câu · đọc liền một mạch (tối đa 15 phút) rồi bấm Chấm điểm`;
     $("#target").textContent=S.sents.join(" "); $("#btnModel").hidden=false; $("#btnMine").disabled=!S.passage;
@@ -925,7 +1072,7 @@ function switchMode(m){
   S.mode=m;
   document.querySelectorAll("#modeTabs button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
   $("#lessonCard").hidden=(m==="free"); $("#freeCard").hidden=(m!=="free"); $("#btnModel").hidden=(m==="free");
-  S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true;
+  S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true; hideModel(); hideUserPlayer();
   $("#result").hidden=true; $("#btnMine").disabled=!(m==="free"?S.lastFree:S.results[S.idx]);
   if(m==="free") pickTopic($("#topicSel").selectedIndex>=0?$("#topicSel").selectedIndex:0); else if(S.scope==="all") switchScope("all"); else selectSent(S.idx);
 }
@@ -933,7 +1080,7 @@ document.querySelectorAll("#modeTabs button").forEach(b=>b.onclick=()=>switchMod
 FREE_TOPICS.forEach((tp,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=tp.t; $("#topicSel").appendChild(o); });
 $("#topicSel").onchange=()=>pickTopic($("#topicSel").selectedIndex);
 $("#btnCopyTrans").onclick=async()=>{ const r=S.lastFree; if(!r) return; try{ await navigator.clipboard.writeText(r.transcript); $("#btnCopyTrans").textContent="Đã copy ✓"; }catch(e){ $("#btnCopyTrans").textContent="Không copy được"; } setTimeout(()=>$("#btnCopyTrans").textContent="Copy bản ghi (dán vào chat để chấm ngữ pháp, từ vựng)",1800); };
-window.__test={alignToRef,switchScope,playSlice,showResult,drawChart,demoResultFn:demoResult,splitPoints,shiftTicks,switchMode,mergePhrases,buildItem,demoResult,frameAnalyze,syllableProminence,S,analyze:(r,i)=>analyze(new Float32Array(16000),r,i),aggregate,sheetRow,loadDict,stressOf};
+window.__test={userPlayer,modelPlayer,wavToFloat,alignToRef,switchScope,playSlice,showResult,drawChart,demoResultFn:demoResult,splitPoints,shiftTicks,switchMode,mergePhrases,buildItem,demoResult,frameAnalyze,syllableProminence,S,analyze:(r,i)=>analyze(new Float32Array(16000),r,i),aggregate,sheetRow,loadDict,stressOf};
 
 (async()=>{ await loadDict(); initLessons(); setMode(); })();
 </script>
