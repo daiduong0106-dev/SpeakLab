@@ -88,6 +88,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
     </div>
   </header>
 
+  <div id="keyBanner" class="card" hidden style="border-color:var(--bad);background:var(--bad-bg)"></div>
   <div class="tabs" id="mainTabs">
     <button data-tab="practice" class="on">Luyện nói</button>
     <button data-tab="summary">Số liệu cho sheet</button>
@@ -113,7 +114,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 
     <div class="card" id="freeCard" hidden>
       <div class="row"><select id="topicSel"></select></div>
-      <div class="hint" style="margin-top:6px">Nói liên tục 1 đến 3 phút, không đọc theo văn bản. App chấm theo những gì Azure nghe được, nên nói rõ ràng và đừng để micro quá xa.</div>
+      <div class="hint" style="margin-top:6px">Nói liên tục tối đa 15 phút, không đọc theo văn bản (đoạn dài được tự cắt ở chỗ im lặng để chấm từng phần). App chấm theo những gì Azure nghe được, nên nói rõ ràng và đừng để micro quá xa.</div>
     </div>
     <div class="card">
       <div class="hint" id="sentLabel"></div>
@@ -126,11 +127,13 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
         </div>
         <button id="btnModel">🔊 Nghe mẫu</button>
         <button id="btnMine" disabled>▶ Nghe lại mình</button>
+        <button id="btnDemo" hidden>Xem thử demo</button>
       </div>
     </div>
 
     <div id="result" hidden>
       <div class="card">
+        <div id="srcTag" class="tag" hidden style="margin:0 0 8px"></div>
         <div class="tiles" id="tiles"></div>
         <div class="legend">
           <span>▲ trọng âm chuẩn (từ điển)</span><span>● âm tiết bạn nhấn mạnh nhất</span>
@@ -147,7 +150,8 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
       <div class="card">
         <b>Đường cao độ và độ lớn theo thời gian</b>
         <div class="hint" style="margin:2px 0 8px">Đường xanh dương = cao độ (nửa cung quanh mức giọng của bạn). Vùng xám = độ lớn. Ô dưới = từng âm tiết.</div>
-        <div style="overflow-x:auto"><canvas id="chart"></canvas></div>
+        <canvas id="chart"></canvas>
+        <input id="chartRange" type="range" min="0" max="100" value="0" hidden style="width:100%;margin-top:8px">
       </div>
       <div class="card">
         <b>Cần sửa trước</b>
@@ -317,7 +321,7 @@ async function toggleRec(){
       const d=e.inputBuffer.getChannelData(0); chunks.push(new Float32Array(d)); n+=d.length;
       let s=0; for(let i=0;i<d.length;i++) s+=d[i]*d[i];
       $("#meter").style.width=clamp(Math.sqrt(s/d.length)*400,0,100)+"%";
-      if(n/ctx.sampleRate>(S.mode==="free"?240:40)) stopRec();
+      if(n/ctx.sampleRate>(S.mode==="free"?900:40)) stopRec();
     };
     const mute=ctx.createGain(); mute.gain.value=0;
     src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
@@ -336,6 +340,7 @@ async function stopRec(){
   let o=0; for(const c of r.chunks){ raw.set(c,o); o+=c.length; }
   const pcm=downsample(raw,r.rate,16000);
   if(pcm.length<16000*0.5){ $("#recStatus").textContent="Bản ghi quá ngắn, thử lại."; return; }
+  S.lastRaw=pcm; $("#btnMine").disabled=false;
   await analyze(pcm, S.sents[S.idx], S.idx);
 }
 function downsample(x,from,to){
@@ -434,19 +439,21 @@ function syllableProminence(fa,syls){
 }
 
 /* ============ phân tích 1 câu ============ */
-async function analyze(pcm, ref, idx){
+async function analyze(pcm, ref, idx, demo){
   const free=S.mode==="free";
-  $("#recStatus").textContent=hasKey()?"Đang chấm bằng Azure…":"Đang tạo kết quả demo…";
+  if(!hasKey()&&!demo){ $("#recStatus").innerHTML='<span class="err">Chưa có Azure key nên chưa chấm được. Bấm ⚙ Azure key để nhập. Bản ghi vừa rồi vẫn nghe lại được.</span>'; return; }
+  $("#recStatus").textContent=demo?"Đang tạo kết quả demo…":"Đang chấm bằng Azure…";
   let json, audio=pcm;
   try{
-    if(hasKey()) json = free ? await assessFree(pcm) : await assessAzure(pcm,ref);
+    if(!demo) json = free ? await assessFree(pcm) : await assessAzure(pcm,ref);
     else{ json=demoResult(free?DEMO_FREE:ref,new Float32Array(0)); audio=demoResult.pcm; }
   }catch(e){ $("#recStatus").innerHTML=`<span class="err">${esc(e.message)}</span>`; return; }
-  const item=buildItem(json,audio,free?"":ref,{free});
+  $("#recStatus").textContent="Đang phân tích âm thanh…"; await new Promise(r=>setTimeout(r,30));
+  const item=buildItem(json,audio,free?"":ref,{free}); item.demo=!!demo; S.lastRaw=null;
   if(free){ item.topic=S.topic; S.freeItems.push(item); S.lastFree=item; }
   else{ S.results[idx]=item; renderSents(); }
   $("#btnMine").disabled=false;
-  $("#recStatus").textContent=hasKey()?"Xong. Bấm vào từng từ để xem chi tiết âm vị.":"Chế độ demo: kết quả từ giọng tổng hợp, không phải giọng bạn. Nhập Azure key để chấm thật.";
+  $("#recStatus").textContent=demo?"DEMO: kết quả từ giọng tổng hợp có sẵn, không phải giọng của bạn.":"Xong. Bấm vào từng từ để xem chi tiết âm vị.";
   showResult(item);
 }
 function mergePhrases(ps){
@@ -462,7 +469,7 @@ function mergePhrases(ps){
   const n=Math.max(1,a.n);
   return {NBest:[{PronunciationAssessment:{AccuracyScore:a.acc/n,FluencyScore:a.flu/n,PronScore:a.pron/n,CompletenessScore:100,ProsodyScore:a.pn?a.pros/a.pn:null},Words:words}]};
 }
-function assessFree(pcm){
+function phrasesOf(pcm){
   return new Promise((resolve,reject)=>{
     const SDK=window.SpeechSDK;
     const sc=SDK.SpeechConfig.fromSubscription(S.cfg.key,S.cfg.region);
@@ -476,19 +483,42 @@ function assessFree(pcm){
     const phrases=[]; let done=false, timer=null;
     const finish=err=>{
       if(done) return; done=true; clearTimeout(timer);
-      const end=()=>{ try{ r.close(); }catch(e){} err?reject(err):resolve(mergePhrases(phrases)); };
+      const end=()=>{ try{ r.close(); }catch(e){} err?reject(err):resolve(phrases); };
       try{ r.stopContinuousRecognitionAsync(end,end); }catch(e){ end(); }
     };
     r.recognized=(s,e)=>{ if(e.result.reason===SDK.ResultReason.RecognizedSpeech){ try{ phrases.push(JSON.parse(e.result.properties.getProperty(SDK.PropertyId.SpeechServiceResponse_JsonResult))); }catch(x){} } };
     r.canceled=(s,e)=>{ if(e.reason===SDK.CancellationReason.Error) finish(new Error("Azure báo lỗi: "+e.errorDetails)); else finish(); };
     r.sessionStopped=()=>finish();
-    timer=setTimeout(()=>finish(phrases.length?null:new Error("Azure không phản hồi, thử lại.")),120000);
+    timer=setTimeout(()=>finish(phrases.length?null:new Error("Azure không phản hồi, thử lại.")),(pcm.length/16000*0.8+60)*1000);
     r.startContinuousRecognitionAsync(()=>{
       const pcm16=toPCM16(pcm), step=3200;
       for(let i=0;i<pcm16.length;i+=step){ push.write(pcm16.slice(i,i+step).buffer); }
       push.close();
     },err=>finish(new Error(String(err))));
   });
+}
+function shiftTicks(j,s){
+  const nb=j.NBest&&j.NBest[0]; if(!nb||!nb.Words) return;
+  nb.Words.forEach(w=>{ if(typeof w.Offset==="number") w.Offset+=s; (w.Syllables||[]).forEach(x=>{ x.Offset+=s; }); (w.Phonemes||[]).forEach(x=>{ x.Offset+=s; }); });
+}
+function splitPoints(pcm,SR=16000,chunk=240){
+  const cuts=[0];
+  while(pcm.length-cuts[cuts.length-1]>(chunk+30)*SR){
+    const base=cuts[cuts.length-1], a=base+(chunk-15)*SR, b=base+(chunk+15)*SR; let best=a, bestE=1e9;
+    for(let s=a;s<b;s+=1600){ let e=0; for(let j=0;j<3200&&s+j<pcm.length;j++) e+=pcm[s+j]*pcm[s+j]; if(e<bestE){ bestE=e; best=s; } }
+    cuts.push(best+1600);
+  }
+  cuts.push(pcm.length); return cuts;
+}
+async function assessFree(pcm){
+  const SR=16000, cuts=splitPoints(pcm,SR), all=[];
+  for(let k=0;k<cuts.length-1;k++){
+    if(cuts.length>2) $("#recStatus").textContent=`Đang chấm đoạn ${k+1}/${cuts.length-1}…`;
+    const shift=Math.round(cuts[k]/SR*1e7);
+    const ps=await phrasesOf(pcm.subarray(cuts[k],cuts[k+1]));
+    ps.forEach(j=>{ shiftTicks(j,shift); all.push(j); });
+  }
+  return mergePhrases(all);
 }
 function buildItem(json,pcm,ref,opts={}){
   const nb=json.NBest[0], pa=nb.PronunciationAssessment||{};
@@ -564,6 +594,8 @@ function showResult(it){
     ["Trọng âm đúng",it.stress.tot?`${it.stress.ok}/${it.stress.tot}`:"–"]
   ];
   $("#tiles").innerHTML=tiles.map(t=>`<div class="tile"><b>${t[1]}</b><span>${t[0]}</span></div>`).join("");
+  $("#srcTag").hidden=!it.demo; $("#srcTag").textContent="DEMO · giọng tổng hợp, không phải giọng của bạn";
+  $("#chartRange").value=0;
   $("#transBox").hidden=!it.free; if(it.free) $("#transText").textContent=it.transcript;
   selWord=-1; renderWords(it); $("#wordDetail").textContent="Bấm vào một từ để xem từng âm vị và nghe lại đúng từ đó.";
   renderIssues(it); requestAnimationFrame(()=>drawChart(it));
@@ -614,25 +646,27 @@ function renderIssues(it){
 /* ============ biểu đồ ============ */
 function drawChart(it){
   const cv=$("#chart"), dpr=window.devicePixelRatio||1;
-  cv.style.width=Math.max(cv.parentElement.clientWidth,Math.ceil(it.fa.n/100*70))+"px";
+  cv.style.width="100%";
   const W=cv.clientWidth, H=cv.clientHeight;
   cv.width=W*dpr; cv.height=H*dpr; const g=cv.getContext("2d"); g.scale(dpr,dpr);
   const cs=getComputedStyle(document.body), ink=cs.getPropertyValue("--ink"), mute=cs.getPropertyValue("--mute"), line=cs.getPropertyValue("--line"), acc=cs.getPropertyValue("--accent");
   g.clearRect(0,0,W,H);
-  const fa=it.fa, T=fa.n/100, padL=6, padR=6, top=8, plotH=H-70, X=t=>padL+(W-padL-padR)*t/T;
+  const fa=it.fa, T=fa.n/100, win=T>40, span=win?30:T, rg=$("#chartRange"); rg.hidden=!win;
+  const t0=win?(+rg.value/100)*(T-span):0, i0=Math.max(0,Math.floor(t0*100)), i1=Math.min(fa.n,Math.ceil((t0+span)*100));
+  const padL=6, padR=6, top=8, plotH=H-70, X=t=>padL+(W-padL-padR)*(t-t0)/span;
   // độ lớn
-  g.fillStyle="rgba(128,128,128,.22)"; g.beginPath(); g.moveTo(X(0),top+plotH);
-  for(let i=0;i<fa.n;i++){ const v=clamp((fa.db[i]-(fa.top-45))/45,0,1); g.lineTo(X(i/100),top+plotH-v*plotH*0.55); }
-  g.lineTo(X(T),top+plotH); g.closePath(); g.fill();
+  g.fillStyle="rgba(128,128,128,.22)"; g.beginPath(); g.moveTo(X(t0),top+plotH);
+  for(let i=i0;i<i1;i++){ const v=clamp((fa.db[i]-(fa.top-45))/45,0,1); g.lineTo(X(i/100),top+plotH-v*plotH*0.55); }
+  g.lineTo(X(i1/100),top+plotH); g.closePath(); g.fill();
   // cao độ
   g.strokeStyle=acc; g.lineWidth=2.2; g.beginPath(); let pen=false;
-  for(let i=0;i<fa.n;i++){ const v=fa.st[i]; if(Number.isNaN(v)){ pen=false; continue; }
+  for(let i=i0;i<i1;i++){ const v=fa.st[i]; if(Number.isNaN(v)){ pen=false; continue; }
     const y=top+plotH*(0.5-clamp(v,-9,9)/20); if(!pen){ g.moveTo(X(i/100),y); pen=true; } else g.lineTo(X(i/100),y); }
   g.stroke();
   // âm tiết
   const y0=top+plotH+8;
   it.words.forEach(w=>{
-    if(w.t0===null) return;
+    if(w.t0===null||w.t1<t0||w.t0>t0+span) return;
     g.fillStyle=mute; g.font="11px system-ui"; g.textAlign="left"; g.fillText(w.text,X(w.t0),y0+10);
     (w.syl.length?w.syl:[{t0:w.t0,t1:w.t1,acc:w.acc}]).forEach((s,k)=>{
       const c=s.acc>=80?"#1b9e6a":s.acc>=60?"#d98e00":"#d23f3f";
@@ -645,6 +679,7 @@ function drawChart(it){
   g.strokeStyle=line; g.lineWidth=1; g.beginPath(); g.moveTo(0,top+plotH*0.5); g.lineTo(W,top+plotH*0.5); g.stroke();
 }
 const curItem=()=>S.mode==="free"?S.lastFree:S.results[S.idx];
+$("#chartRange").oninput=()=>{ const r=curItem(); if(r) drawChart(r); };
 window.addEventListener("resize",()=>{ const r=curItem(); if(r&&!$("#result").hidden) drawChart(r); });
 
 /* ============ phát lại ============ */
@@ -757,7 +792,17 @@ function renderHistory(){
 }
 
 /* ============ sự kiện ============ */
-function setMode(){ const t=$("#modeTag"); t.textContent=hasKey()?"Azure":"Demo"; }
+function setMode(){
+  const t=$("#modeTag"), b=$("#keyBanner"); t.textContent=hasKey()?"Azure":"Chưa có key";
+  if(hasKey()) b.hidden=true;
+  else{
+    b.hidden=false;
+    b.innerHTML=(S.cfg.key&&S.cfg.region&&!window.SpeechSDK)
+      ?"<b>Không tải được Azure SDK</b> (mạng hoặc adblock chặn cdn.jsdelivr.net). Tắt adblock cho trang này rồi tải lại."
+      :"<b>Chưa có Azure key trên địa chỉ web này nên app chưa chấm được giọng của bạn.</b> Bấm ⚙ Azure key để nhập (mỗi địa chỉ web khác nhau phải nhập lại 1 lần).";
+  }
+  $("#btnDemo").hidden=hasKey();
+}
 document.querySelectorAll("#mainTabs button").forEach(b=>b.onclick=()=>{
   document.querySelectorAll("#mainTabs button").forEach(x=>x.classList.toggle("on",x===b));
   ["practice","summary","history"].forEach(n=>$("#tab-"+n).hidden=(n!==b.dataset.tab));
@@ -767,7 +812,8 @@ document.querySelectorAll("#mainTabs button").forEach(b=>b.onclick=()=>{
 });
 $("#btnRec").onclick=toggleRec;
 $("#btnModel").onclick=speakModel;
-$("#btnMine").onclick=()=>{ const r=curItem(); if(r) playSlice(r.pcm,0,r.pcm.length/16000); };
+$("#btnMine").onclick=()=>{ const r=curItem(); const pcm=S.lastRaw||(r&&r.pcm); if(pcm) playSlice(pcm,0,pcm.length/16000); };
+$("#btnDemo").onclick=()=>analyze(new Float32Array(16000),S.mode==="free"?"":S.sents[S.idx],S.idx,true);
 $("#btnCustom").onclick=()=>{ $("#customBox").hidden=!$("#customBox").hidden; };
 $("#btnUseCustom").onclick=()=>{
   const txt=$("#customText").value.trim(); if(!txt) return;
@@ -782,7 +828,7 @@ $("#btnSave").onclick=()=>{ const a=aggregate(); if(!a) return; const h=store.ge
 /* ===== chuyển chế độ ===== */
 function pickTopic(i){
   const tp=FREE_TOPICS[i]; S.topic=tp.t;
-  $("#sentLabel").textContent="Nói tự do · tối đa 4 phút, nên nói 1 đến 3 phút";
+  $("#sentLabel").textContent="Nói tự do · tối đa 15 phút";
   $("#target").textContent=tp.p;
 }
 function switchMode(m){
@@ -796,7 +842,7 @@ document.querySelectorAll("#modeTabs button").forEach(b=>b.onclick=()=>switchMod
 FREE_TOPICS.forEach((tp,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=tp.t; $("#topicSel").appendChild(o); });
 $("#topicSel").onchange=()=>pickTopic($("#topicSel").selectedIndex);
 $("#btnCopyTrans").onclick=async()=>{ const r=S.lastFree; if(!r) return; try{ await navigator.clipboard.writeText(r.transcript); $("#btnCopyTrans").textContent="Đã copy ✓"; }catch(e){ $("#btnCopyTrans").textContent="Không copy được"; } setTimeout(()=>$("#btnCopyTrans").textContent="Copy bản ghi (dán vào chat để chấm ngữ pháp, từ vựng)",1800); };
-window.__test={switchMode,mergePhrases,buildItem,demoResult,frameAnalyze,syllableProminence,S,analyze:(r,i)=>analyze(new Float32Array(16000),r,i),aggregate,sheetRow,loadDict,stressOf};
+window.__test={splitPoints,shiftTicks,switchMode,mergePhrases,buildItem,demoResult,frameAnalyze,syllableProminence,S,analyze:(r,i)=>analyze(new Float32Array(16000),r,i),aggregate,sheetRow,loadDict,stressOf};
 
 (async()=>{ await loadDict(); initLessons(); setMode(); })();
 </script>
