@@ -92,6 +92,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
   <header>
     <h1>Speak Lab<small id="appSub">Ghi âm → chấm từng âm tiết, trọng âm, ngắt nghỉ</small></h1>
     <div class="row">
+      <div class="tabs" id="userTabs" style="margin:0"><button data-user="jun">Jun</button><button data-user="em">Em trai</button></div>
       <div class="tabs" id="langTabs" style="margin:0"><button data-lang="en">English</button><button data-lang="vi">Tiếng Việt</button></div>
       <span id="modeTag" class="tag">Demo</span>
       <button id="btnSettings">⚙ Azure key</button>
@@ -346,6 +347,10 @@ const FREE_TOPICS_VI=[
 ];
 const lessonsNow=()=>S.lang==="vi"?LESSONS_VI:LESSONS, topicsNow=()=>S.lang==="vi"?FREE_TOPICS_VI:FREE_TOPICS;
 const LOC=()=>S.lang==="vi"?"vi-VN":"en-US";
+const USERS={jun:"Jun",em:"Em trai"};
+if(!USERS[S.user=store.get("sl_user","jun")]) S.user="jun";
+const HK=()=>"sl_hist_"+S.user;
+try{ if(localStorage.getItem("sl_hist")&&!localStorage.getItem("sl_hist_jun")) localStorage.setItem("sl_hist_jun",localStorage.getItem("sl_hist")); }catch(e){}
 const hasKey = () => !!(S.cfg.key && S.cfg.region && window.SpeechSDK);
 
 /* ============ UI: bài học ============ */
@@ -1035,7 +1040,7 @@ function sheetRow(a){
 
 /* ============ lịch sử ============ */
 function renderHistory(){
-  const h=store.get("sl_hist",[]), box=$("#histList");
+  const h=store.get(HK(),[]), box=$("#histList");
   box.innerHTML=h.length?h.slice().reverse().map(x=>`<div><span>${x.date} · ${x.lang==="vi"?"VI · ":""}${esc(x.topic)}</span><span>Pron ${x.pron} · Flu ${x.flu} · wpm ${x.wpm} · bad pause ${x.bad}</span></div>`).join(""):`<div class="hint">Chưa có buổi nào được lưu.</div>`;
   const cv=$("#spark"), dpr=window.devicePixelRatio||1, W=cv.clientWidth, H=cv.clientHeight; cv.width=W*dpr; cv.height=H*dpr;
   const g=cv.getContext("2d"); g.scale(dpr,dpr); g.clearRect(0,0,W,H);
@@ -1080,7 +1085,7 @@ $("#btnUseCustom").onclick=()=>{
 $("#btnSettings").onclick=()=>{ $("#inKey").value=S.cfg.key||""; $("#inRegion").value=S.cfg.region||""; $("#dlg").showModal(); };
 $("#btnSaveKey").onclick=()=>{ S.cfg={key:$("#inKey").value.trim(),region:$("#inRegion").value.trim()}; store.set("sl_cfg",S.cfg); setMode(); };
 $("#btnCopy").onclick=async()=>{ const a=aggregate(); if(!a) return; try{ await navigator.clipboard.writeText(sheetRow(a)); $("#btnCopy").textContent="Đã copy ✓"; }catch(e){ $("#btnCopy").textContent="Không copy được"; } setTimeout(()=>$("#btnCopy").textContent="Copy dòng (cột A→X)",1800); };
-$("#btnSave").onclick=()=>{ const a=aggregate(); if(!a) return; const h=store.get("sl_hist",[]); h.push(a); store.set("sl_hist",h); $("#btnSave").textContent="Đã lưu ✓"; setTimeout(()=>$("#btnSave").textContent="Lưu vào lịch sử",1800); };
+$("#btnSave").onclick=()=>{ const a=aggregate(); if(!a) return; const h=store.get(HK(),[]); h.push(a); store.set(HK(),h); $("#btnSave").textContent="Đã lưu ✓"; setTimeout(()=>$("#btnSave").textContent="Lưu vào lịch sử",1800); };
 
 /* ===== trình phát có timeline ===== */
 const Players=[];
@@ -1230,6 +1235,12 @@ function switchMode(m){
 }
 document.querySelectorAll("#modeTabs button").forEach(b=>b.onclick=()=>switchMode(b.dataset.mode));
 function fillTopics(){ const s=$("#topicSel"); s.innerHTML=""; topicsNow().forEach((tp,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=tp.t; s.appendChild(o); }); }
+function setUser(u){
+  S.user=u; store.set("sl_user",u);
+  document.querySelectorAll("#userTabs button").forEach(b=>b.classList.toggle("on",b.dataset.user===u));
+  setLang(S.lang);
+  if($("#tab-history").hidden===false) renderHistory(); if($("#tab-summary").hidden===false) renderSummary();
+}
 function setLang(l,init){
   S.lang=l; store.set("sl_lang",l); document.documentElement.lang=l;
   CAL.PACE_TARGET=l==="vi"?240:145; CAL.PACE_SCALE=l==="vi"?0.6:1; CAL.PITCH_STD_GOOD=l==="vi"?5.5:3.5;
@@ -1240,12 +1251,13 @@ function setLang(l,init){
   if(!init){ S.results={}; S.passage=null; S.freeItems=[]; S.lastFree=null; S.pending=null; S.lastRaw=null; hideModel(); hideUserPlayer(); $("#result").hidden=true; $("#btnScore").hidden=true; $("#btnResume").hidden=true; $("#btnMine").disabled=true; }
   fillTopics(); initLessons(); if(S.mode==="free") pickTopic(0); setMode();
 }
+document.querySelectorAll("#userTabs button").forEach(b=>b.onclick=()=>{ if(rec||b.dataset.user===S.user) return; setUser(b.dataset.user); });
 document.querySelectorAll("#langTabs button").forEach(b=>b.onclick=()=>{ if(rec||b.dataset.lang===S.lang) return; setLang(b.dataset.lang); });
 $("#topicSel").onchange=()=>pickTopic($("#topicSel").selectedIndex);
 $("#btnCopyTrans").onclick=async()=>{ const r=S.lastFree; if(!r) return; try{ await navigator.clipboard.writeText(r.transcript); $("#btnCopyTrans").textContent="Đã copy ✓"; }catch(e){ $("#btnCopyTrans").textContent="Không copy được"; } setTimeout(()=>$("#btnCopyTrans").textContent="Copy bản ghi (dán vào chat để chấm ngữ pháp, từ vựng)",1800); };
 window.__test={toneOfText,observeTone,toneAnalyze,setLang,userPlayer,modelPlayer,wavToFloat,alignToRef,switchScope,playSlice,showResult,drawChart,demoResultFn:demoResult,splitPoints,shiftTicks,switchMode,mergePhrases,buildItem,demoResult,frameAnalyze,syllableProminence,S,analyze:(r,i)=>analyze(new Float32Array(16000),r,i),aggregate,sheetRow,loadDict,stressOf};
 
-(async()=>{ await loadDict(); setLang(S.lang,true); })();
+(async()=>{ await loadDict(); document.querySelectorAll("#userTabs button").forEach(b=>b.classList.toggle("on",b.dataset.user===S.user)); setLang(S.lang,true); })();
 </script>
 </body>
 </html>
