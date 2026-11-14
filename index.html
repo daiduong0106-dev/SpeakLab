@@ -140,7 +140,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
         </div>
         <button id="btnModel">🔊 Nghe mẫu</button>
         <button id="btnMine" disabled>▶ Nghe lại mình</button>
-        <button id="btnScore" class="primary" hidden>Chấm điểm</button>
+        <button id="btnScore" class="primary" hidden>Chấm điểm</button><button id="btnResume" hidden>⏺ Ghi tiếp</button>
         <button id="btnDemo" hidden>Xem thử demo</button>
       </div>
     </div>
@@ -331,7 +331,7 @@ const esc=s=>s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&qu
 function selectSent(i){
   S.idx=i; renderSents();
   $("#sentLabel").textContent=`Câu ${i+1}/${S.sents.length}`;
-  $("#target").textContent=S.sents[i]; $("#btnModel").hidden=false; S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true; hideModel();
+  $("#target").textContent=S.sents[i]; $("#btnModel").hidden=false; S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true; $("#btnResume").hidden=true; hideModel();
   const r=S.results[i];
   $("#btnMine").disabled=!r;
   if(r) showResult(r); else{ $("#result").hidden=true; hideUserPlayer(); }
@@ -339,8 +339,9 @@ function selectSent(i){
 
 /* ============ ghi âm ============ */
 let rec=null, recStart=0, recTimer=null;
-async function toggleRec(){
+async function toggleRec(append){
   if(rec){ return stopRec(); }
+  const base=(append===true&&S.pending)?S.pending:null;
   try{
     const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false,noiseSuppression:false,autoGainControl:false,channelCount:1}});
     const ctx=new (window.AudioContext||window.webkitAudioContext)();
@@ -351,16 +352,16 @@ async function toggleRec(){
       const d=e.inputBuffer.getChannelData(0); chunks.push(new Float32Array(d)); n+=d.length;
       let s=0; for(let i=0;i<d.length;i++) s+=d[i]*d[i];
       const lv=clamp(Math.sqrt(s/d.length)*400,0,100)+"%"; $("#meter").style.width=lv; $("#meter2").style.width=lv;
-      if(n/ctx.sampleRate>((S.mode==="free"||S.scope==="all")?900:40)) stopRec();
+      if(n/ctx.sampleRate+(base?base.length/16000:0)>((S.mode==="free"||S.scope==="all")?900:40)) stopRec();
     };
     const mute=ctx.createGain(); mute.gain.value=0;
     src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
-    rec={stream,ctx,proc,src,chunks,rate:ctx.sampleRate};
-    S.pending=null; $("#btnScore").hidden=true;
+    rec={stream,ctx,proc,src,chunks,rate:ctx.sampleRate,base};
+    S.pending=null; $("#btnScore").hidden=true; $("#btnResume").hidden=true;
     $("#btnRec").classList.add("live"); $("#btnRec").textContent="DỪNG";
     $("#recStatus").textContent="Đang ghi… bấm ■ Dừng ghi (thanh đỏ phía dưới màn hình) khi nói xong.";
     Players.forEach(p=>p.pause());
-    recStart=Date.now(); $("#recTime").textContent="0:00"; $("#recBar").hidden=false;
+    recStart=Date.now()-(base?base.length/16000*1000:0); $("#recTime").textContent=fmt(base?base.length/16000:0); $("#recBar").hidden=false;
     recTimer=setInterval(()=>{ $("#recTime").textContent=fmt((Date.now()-recStart)/1000); },250);
   }catch(e){
     $("#recStatus").innerHTML=`<span class="err">Không mở được micro: ${esc(String(e.message||e))}</span>`;
@@ -373,11 +374,12 @@ async function stopRec(){
   $("#btnRec").classList.remove("live"); $("#btnRec").textContent="GHI ÂM"; $("#meter").style.width="0";
   const total=r.chunks.reduce((s,c)=>s+c.length,0), raw=new Float32Array(total);
   let o=0; for(const c of r.chunks){ raw.set(c,o); o+=c.length; }
-  const pcm=downsample(raw,r.rate,16000);
+  let pcm=downsample(raw,r.rate,16000);
+  if(r.base){ const j=new Float32Array(r.base.length+pcm.length); j.set(r.base,0); j.set(pcm,r.base.length); pcm=j; }
   if(pcm.length<16000*0.5){ $("#recStatus").textContent="Bản ghi quá ngắn, thử lại."; return; }
-  S.lastRaw=pcm; S.pending=pcm; $("#btnMine").disabled=false; $("#btnScore").hidden=false; loadUserRaw(pcm);
+  S.lastRaw=pcm; S.pending=pcm; $("#btnMine").disabled=false; $("#btnScore").hidden=false; $("#btnResume").hidden=false; loadUserRaw(pcm);
   const secs=pcm.length/16000, mm=Math.floor(secs/60), ss=Math.round(secs%60);
-  $("#recStatus").textContent=`Đã ghi ${mm?mm+" phút ":""}${ss} giây. Bấm "Nghe lại mình" để kiểm tra, rồi bấm "Chấm điểm". Muốn ghi lại thì bấm GHI ÂM.`;
+  $("#recStatus").textContent=`Đã ghi ${mm?mm+" phút ":""}${ss} giây. Bấm "Nghe lại mình" để kiểm tra, rồi bấm "Chấm điểm". Nói thiếu thì bấm "Ghi tiếp" để ghi nối vào cuối; muốn làm lại từ đầu thì bấm GHI ÂM.`;
 }
 function downsample(x,from,to){
   if(from===to) return x;
@@ -485,7 +487,7 @@ async function analyze(pcm, ref, idx, demo){
     else{ json=demoResult(free?DEMO_FREE:ref,new Float32Array(0)); audio=demoResult.pcm; }
   }catch(e){ $("#recStatus").innerHTML=`<span class="err">${esc(e.message)}</span>`; return; }
   $("#recStatus").textContent="Đang phân tích âm thanh…"; await new Promise(r=>setTimeout(r,30));
-  const item=buildItem(json,audio,free?"":ref,{free}); item.demo=!!demo; S.lastRaw=null; if(!demo){ S.pending=null; $("#btnScore").hidden=true; }
+  const item=buildItem(json,audio,free?"":ref,{free}); item.demo=!!demo; S.lastRaw=null; if(!demo){ S.pending=null; $("#btnScore").hidden=true; $("#btnResume").hidden=true; }
   if(free){ item.topic=S.topic; S.freeItems.push(item); S.lastFree=item; }
   else if(all){ S.passage=item; }
   else{ S.results[idx]=item; renderSents(); }
@@ -917,6 +919,7 @@ $("#btnRec").onclick=toggleRec;
 $("#btnModel").onclick=showModel;
 $("#btnMine").onclick=()=>{ const r=curItem(); const pcm=S.lastRaw||(r&&r.pcm); if(!pcm) return; if(userPlayer.pcm!==pcm){ if(r&&r.pcm===pcm) loadUserFromItem(r); else loadUserRaw(pcm); } userPlayer.play(); };
 $("#btnStop").onclick=()=>stopRec();
+$("#btnResume").onclick=()=>toggleRec(true);
 $("#btnScore").onclick=async()=>{ if(!S.pending) return; const b=$("#btnScore"); b.disabled=true; try{ await analyze(S.pending,S.mode==="free"?"":(S.scope==="all"?S.sents.join(" "):S.sents[S.idx]),S.idx); }finally{ b.disabled=false; } };
 $("#btnDemo").onclick=()=>analyze(new Float32Array(16000),S.mode==="free"?"":(S.scope==="all"?S.sents.join(" "):S.sents[S.idx]),S.idx,true);
 $("#btnCustom").onclick=()=>{ $("#customBox").hidden=!$("#customBox").hidden; };
@@ -1055,7 +1058,7 @@ async function showModel(){
 /* ===== chuyển chế độ ===== */
 function switchScope(sc){
   S.scope=sc; document.querySelectorAll("#scopeTabs button").forEach(b=>b.classList.toggle("on",b.dataset.scope===sc));
-  $("#sentList").hidden=(sc==="all"); S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true; $("#result").hidden=true; hideModel(); hideUserPlayer();
+  $("#sentList").hidden=(sc==="all"); S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true; $("#btnResume").hidden=true; $("#result").hidden=true; hideModel(); hideUserPlayer();
   if(sc==="all"){
     $("#sentLabel").textContent=`Cả đoạn · ${S.sents.length} câu · đọc liền một mạch (tối đa 15 phút) rồi bấm Chấm điểm`;
     $("#target").textContent=S.sents.join(" "); $("#btnModel").hidden=false; $("#btnMine").disabled=!S.passage;
@@ -1072,7 +1075,7 @@ function switchMode(m){
   S.mode=m;
   document.querySelectorAll("#modeTabs button").forEach(b=>b.classList.toggle("on",b.dataset.mode===m));
   $("#lessonCard").hidden=(m==="free"); $("#freeCard").hidden=(m!=="free"); $("#btnModel").hidden=(m==="free");
-  S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true; hideModel(); hideUserPlayer();
+  S.pending=null; S.lastRaw=null; $("#btnScore").hidden=true; $("#btnResume").hidden=true; hideModel(); hideUserPlayer();
   $("#result").hidden=true; $("#btnMine").disabled=!(m==="free"?S.lastFree:S.results[S.idx]);
   if(m==="free") pickTopic($("#topicSel").selectedIndex>=0?$("#topicSel").selectedIndex:0); else if(S.scope==="all") switchScope("all"); else selectSent(S.idx);
 }
