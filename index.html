@@ -396,7 +396,7 @@ async function toggleRec(append){
       const d=e.inputBuffer.getChannelData(0); chunks.push(new Float32Array(d)); n+=d.length;
       let s=0; for(let i=0;i<d.length;i++) s+=d[i]*d[i];
       const lv=clamp(Math.sqrt(s/d.length)*400,0,100)+"%"; $("#meter").style.width=lv; $("#meter2").style.width=lv;
-      if(n/ctx.sampleRate+(base?base.length/16000:0)>((S.mode==="free"||S.scope==="all")?900:40)) stopRec();
+      if(n/ctx.sampleRate+(base?base.length/16000:0)>((S.mode==="free"||S.scope==="all")?900:600)) stopRec();
     };
     const mute=ctx.createGain(); mute.gain.value=0;
     src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
@@ -527,7 +527,7 @@ async function analyze(pcm, ref, idx, demo){
   $("#recStatus").textContent=demo?"Đang tạo kết quả demo…":"Đang chấm bằng Azure…";
   let json, audio=pcm;
   try{
-    if(!demo) json = free ? await assessFree(pcm) : (all||S.lang==="vi") ? await assessRead(pcm,ref) : await assessAzure(pcm,ref);
+    if(!demo) json = free ? await assessFree(pcm) : (all||S.lang==="vi"||pcm.length/16000>30) ? await assessRead(pcm,ref) : await assessAzure(pcm,ref);
     else{ json=demoResult(free?DEMO_FREE:ref,new Float32Array(0)); audio=demoResult.pcm; }
   }catch(e){ $("#recStatus").innerHTML=`<span class="err">${esc(e.message)}</span>`; return; }
   $("#recStatus").textContent="Đang phân tích âm thanh…"; await new Promise(r=>setTimeout(r,30));
